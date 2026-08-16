@@ -1,0 +1,6 @@
+# dependencies / build output
+node_modules/
+*.log
+
+# local machine specifics
+.DS_Store

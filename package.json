@@ -1,0 +1,26 @@
+{
+  "name": "@deepseek-ai/dsh-vision-bridge",
+  "description": "Vision bridge: lets a text-only main model recognize images through the sense (SenseNova) vision models. Host: vision_analyze tool + upload endpoint. Client: camera button in the composer tool row.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "*",
+    "react": "^18.2.0"
+  }
+}
