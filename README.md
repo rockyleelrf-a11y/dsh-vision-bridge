@@ -2,6 +2,8 @@
 
 **Give your text-only DeepSeek Harness agent real image understanding — without switching models.**
 
+**English** | [中文](./README.zh-CN.md)
+
 Vision Bridge lets a **text-only main model** (e.g. `deepseek-v4-flash`) recognize pasted images, OCR text, and answer questions about pictures by routing them to an external **vision-capable model** (e.g. SenseNova / any OpenAI-compatible vision endpoint). The chat keeps showing your original image as a thumbnail — the long description only goes to the model.
 
 ## Features
@@ -99,7 +101,9 @@ dsh-vision-bridge/
 │   └── client.js         # Client half: composer camera button (__ModuleLoader__ format)
 ├── scripts/
 │   └── install.sh        # One-shot installer (package + patch + apiproxy fix)
-└── README.md
+├── README.md             # This file (English)
+├── README.zh-CN.md       # 中文版说明
+└── LICENSE
 ```
 
 ## Notes & limitations
