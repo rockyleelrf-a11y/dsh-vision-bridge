@@ -117,152 +117,55 @@ EOF
   fi
 fi
 
-# ---- 3. apiproxy admission patches (paste + model-switch) ----
-echo "== 3/4 patch host-apiproxy admission =="
-# Locate the installed dsh-host-apiproxy (follows pnpm symlinks from the profile tree)
-APIPROXY=$(readlink -f "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js" 2>/dev/null || echo "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js")
-if [[ ! -f "$APIPROXY" ]]; then
-  echo "warning: dsh-host-apiproxy not found at $APIPROXY; skipping admission patches" >&2
-elif ! node --check "$APIPROXY" 2>/dev/null; then
-  echo "error: dsh-host-apiproxy is ALREADY broken (syntax check failed); refusing to patch." >&2
+# ---- 3. deepseek model capability declaration ----
+echo "== 3/4 patch deepseek model capability declaration =="
+# The image admission gates in dsh-host-apiproxy (paste + model-switch) both
+# trust llm.resolveModelInfo(...).inputModalities. The deepseek adapter
+# hard-codes ["text"], so a text-only main model rejects image messages.
+# Declaring image input on the deepseek route makes both gates pass — and the
+# vision-bridge llm/stream listener converts image blocks to text BEFORE they
+# reach the adapter, so the deepseek API never receives image content.
+#
+# This is a tiny, brace-free string replacement on the adapter's capability
+# declaration. It does NOT touch dsh-host-apiproxy or dsh-client-connection.
+LLMDEEPSEEK=$(readlink -f "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-llm-deepseek/lib/index.js" 2>/dev/null || echo "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-llm-deepseek/lib/index.js")
+if [[ ! -f "$LLMDEEPSEEK" ]]; then
+  echo "warning: dsh-llm-deepseek not found at $LLMDEEPSEEK; skipping capability patch" >&2
+elif ! node --check "$LLMDEEPSEEK" 2>/dev/null; then
+  echo "error: dsh-llm-deepseek is ALREADY broken (syntax check failed); refusing to patch." >&2
   echo "       This usually means the DeepSeek Harness installation is corrupted." >&2
   echo "       Reinstall DeepSeek Harness first, then re-run this installer." >&2
-  echo "       (dsh-client-connection failing the same way is another symptom of a" >&2
-  echo "        corrupted install; vision-bridge never modifies that package.)" >&2
 else
-  # Safety: back up before touching, then verify syntax after; roll back on failure.
-  cp "$APIPROXY" "$APIPROXY.vb-bak"
-  python3 - "$APIPROXY" <<'PYEOF'
-import sys, re
-
+  cp "$LLMDEEPSEEK" "$LLMDEEPSEEK.vb-bak"
+  python3 - "$LLMDEEPSEEK" <<'PYEOF'
+import sys
 path = sys.argv[1]
 try:
     src = open(path, encoding='utf-8').read()
 except OSError as e:
-    print('warning: cannot read %s (%s) — skipping admission patches' % (path, e))
+    print('warning: cannot read %s (%s) — skipping' % (path, e))
     sys.exit(0)
-
-TAB = chr(9)
-out = []
-
-def if_statement_bounds(text, if_pos):
-    """Extent of the whole if-statement starting at if_pos:
-    (body_start, body_end) covering a {...} block or a single statement,
-    balancing parens/braces so we never clip mid-expression."""
-    # 1. skip the condition (balanced parens)
-    depth = 0
-    i = if_pos + 2
-    while i < len(text):
-        c = text[i]
-        if c == '(':
-            depth += 1
-        elif c == ')':
-            depth -= 1
-            if depth == 0:
-                i += 1
-                break
-        i += 1
-    # 2. skip whitespace / newlines
-    j = i
-    while j < len(text) and text[j] in ' \t\r\n':
-        j += 1
-    if j < len(text) and text[j] == '{':
-        # block statement — balance braces
-        depth = 0
-        k = j
-        while k < len(text):
-            c = text[k]
-            if c == '{':
-                depth += 1
-            elif c == '}':
-                depth -= 1
-                if depth == 0:
-                    return if_pos, k
-            k += 1
-        return None, None
-    # 3. single statement — scan to ';' balancing (), {}, [] (cross-line safe)
-    depth = 0
-    k = j
-    while k < len(text):
-        c = text[k]
-        if c in '({[':
-            depth += 1
-        elif c in ')}]':
-            depth -= 1
-        elif c == ';' and depth == 0:
-            return if_pos, k
-        elif c == '\n' and depth == 0:
-            return if_pos, k - 1
-        k += 1
-    return None, None
-
-def find_enclosing_if(text, anchor):
-    """Nearest line-start `if (` before the anchor whose statement body
-    contains the anchor.  Anchors on line-start ifs only, so comments or
-    strings containing 'if (' are never picked up."""
-    idx = text.find(anchor)
-    if idx < 0:
-        return None, None
-    best = None
-    for m in re.finditer(r'(?m)^[ \t]*if \(', text):
-        if m.start() >= idx:
-            break
-        body_start, body_end = if_statement_bounds(text, m.start())
-        if body_start is not None and body_end > idx:
-            best = (m.start(), body_end)
-    return best if best is not None else (None, None)
-
-# ---- patch 1: session.prompt paste admission gate ----
-if_pos, end = find_enclosing_if(src, 'MODEL_DOES_NOT_SUPPORT_IMAGES')
-if if_pos is None:
-    if 'inputModalities' in src:
-        out.append('paste admission: no MODEL_DOES_NOT_SUPPORT_IMAGES gate found (already patched, or this DSH version uses a different check) — skipping')
+OLD = 'inputModalities: ["text"]'
+NEW = 'inputModalities: ["text", "image"]'
+count = src.count(OLD)
+if count == 0:
+    if 'inputModalities: ["text", "image"]' in src:
+        print('deepseek capability: already patched, skipping')
     else:
-        out.append('paste admission: no image gate found in this DSH version, skipping')
-else:
-    old = src[if_pos:end + 1]
-    new = (TAB * 6 + '// Vision-bridge override (local deployment patch): allow pasted-image messages to reach the agent loop.\n'
-           + TAB * 6 + 'if (false) { /* vision-bridge: paste image admission gate disabled */ }\n')
-    src = src.replace(old, new, 1)
-    out.append('paste admission: patched')
-
-# ---- patch 2: selectModel model-switch gate ----
-anchor = 'does not accept image input'
-if anchor not in src:
-    anchor = 'does not support image input'
-if anchor not in src:
-    out.append('model-switch gate: not found (already patched, or this DSH version differs) — skipping')
-else:
-    if_pos, end = find_enclosing_if(src, anchor)
-    if if_pos is None:
-        out.append('warning: model-switch image gate found but its if-statement could not be located — not patched')
-    else:
-        old = src[if_pos:end + 1]
-        new = (TAB * 6 + '// Vision-bridge override (local deployment patch): allow model switch to text-only models in image sessions.\n'
-               + TAB * 6 + 'if (false) { /* vision-bridge: model-switch image admission gate disabled */ }\n')
-        src = src.replace(old, new, 1)
-        out.append('model-switch gate: patched')
-
+        print('warning: no `inputModalities: ["text"]` found — this DSH version may differ; skipping')
+    sys.exit(0)
 try:
-    open(path, 'w', encoding='utf-8').write(src)
+    open(path, 'w', encoding='utf-8').write(src.replace(OLD, NEW))
 except OSError as e:
-    print('warning: cannot write %s (%s) — patches NOT persisted' % (path, e), file=sys.stderr)
+    print('warning: cannot write %s (%s) — patch NOT persisted' % (path, e), file=sys.stderr)
     sys.exit(0)
-
-for line in out:
-    print(line)
+print('deepseek capability: patched (%d occurrence(s))' % count)
 PYEOF
-  PY_RC=$?
-  if [[ $PY_RC -ne 0 ]]; then
-    cp "$APIPROXY.vb-bak" "$APIPROXY"
-    echo "error: apiproxy patching failed (exit $PY_RC); original restored from $APIPROXY.vb-bak" >&2
-  elif ! node --check "$APIPROXY" 2>/dev/null; then
-    cp "$APIPROXY.vb-bak" "$APIPROXY"
-    echo "error: patched dsh-host-apiproxy failed a syntax check; original restored from $APIPROXY.vb-bak" >&2
-    echo "       If you need the vision-bridge admission patches, this DSH version is not"
-    echo "       supported by the automatic patcher — please report the DSH version." >&2
+  if ! node --check "$LLMDEEPSEEK" 2>/dev/null; then
+    cp "$LLMDEEPSEEK.vb-bak" "$LLMDEEPSEEK"
+    echo "error: patched dsh-llm-deepseek failed a syntax check; original restored from $LLMDEEPSEEK.vb-bak" >&2
   else
-    echo "admission patches OK (syntax verified)"
+    echo "deepseek capability patch OK (syntax verified)"
   fi
 fi
 
