@@ -117,89 +117,101 @@ EOF
   fi
 fi
 
-# ---- 3. apiproxy admission patch ----
+# ---- 3. apiproxy admission patches (paste + model-switch) ----
 echo "== 3/4 patch host-apiproxy admission =="
 # Locate the installed dsh-host-apiproxy (follows pnpm symlinks from the profile tree)
 APIPROXY=$(readlink -f "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js" 2>/dev/null || echo "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js")
 if [[ ! -f "$APIPROXY" ]]; then
-  echo "warning: dsh-host-apiproxy not found at $APIPROXY; skipping admission patch" >&2
-elif grep -q "Vision-bridge override" "$APIPROXY"; then
-  echo "admission patch already applied, skipping"
+  echo "warning: dsh-host-apiproxy not found at $APIPROXY; skipping admission patches" >&2
 else
+  # Both patches anchor on STABLE strings (error codes / user-visible messages)
+  # and locate the enclosing if-block by brace balancing, so they tolerate
+  # indentation and code-shape differences between DSH versions. A missing
+  # anchor degrades to a warning, never an error — installation continues.
   python3 - "$APIPROXY" <<'PYEOF'
 import sys
-path = sys.argv[1]
-src = open(path, encoding='utf-8').read()
-OLD = """\t\t\t\t\t\t\t\tif (hasImage) {
-\t\t\t\t\t\t\t\t\tconst current = selectionFor(agent).current;
-\t\t\t\t\t\t\t\t\tconst modelInfo = await ctx.llm.resolveModelInfo(current.provider, current.model);
-\t\t\t\t\t\t\t\t\tif (modelInfo.inputModalities !== void 0 && !modelInfo.inputModalities.includes("image")) return err(request, {
-\t\t\t\t\t\t\t\t\t\tcode: "attachment-error",
-\t\t\t\t\t\t\t\t\t\tmessage: `Model "${current.model}" does not support image input.`,
-\t\t\t\t\t\t\t\t\t\tdetails: { reason: "MODEL_DOES_NOT_SUPPORT_IMAGES" }
-\t\t\t\t\t\t\t\t\t});
-\t\t\t\t\t\t\t\t}"""
-NEW = """\t\t\t\t\t\t\t\tif (hasImage) {
-\t\t\t\t\t\t\t\t\t// Vision-bridge override (local deployment patch): allow
-\t\t\t\t\t\t\t\t\t// pasted-image messages to reach the agent loop, where the
-\t\t\t\t\t\t\t\t\t// vision-bridge `llm/stream` listener converts image blocks
-\t\t\t\t\t\t\t\t\t// into vision-model text descriptions before the request
-\t\t\t\t\t\t\t\t\t// reaches the text-only main model.
-\t\t\t\t\t\t\t\t}"""
-if OLD not in src:
-    print("error: could not find the exact admission block to patch; your dsh-host-apiproxy version may differ (see README)", file=sys.stderr)
-    sys.exit(1)
-open(path, 'w', encoding='utf-8').write(src.replace(OLD, NEW, 1))
-print("admission patch applied")
-PYEOF
 
-  # Also patch the model-switch gate (selectModel endpoint) so text-only models
-  # can be selected in sessions that already contain images.
-  if grep -q "does not accept image input" "$APIPROXY"; then
-    python3 - "$APIPROXY" <<'PYEOF2'
-import sys
 path = sys.argv[1]
-src = open(path, encoding='utf-8').read()
-idx = src.find('does not accept image input')
-if idx < 0:
-    print('model-switch gate already patched')
+try:
+    src = open(path, encoding='utf-8').read()
+except OSError as e:
+    print('warning: cannot read %s (%s) — skipping admission patches' % (path, e))
     sys.exit(0)
-NL = chr(10)
-line_start = src.rfind(NL, 0, idx) + 1
-block_start = src.rfind(NL, 0, line_start) + 1
-if_start_idx = src.rfind('if ([...found.agent', 0, block_start)
-full_line_start = if_start_idx - 6
-brace_start = src.find('{', if_start_idx)
-depth = 0
-outer_depth = 0
-for j in range(brace_start, brace_start + 500):
-    if src[j] == '{':
-        if outer_depth == 0:
-            outer_depth += 1
-        depth += 1
-    elif src[j] == '}':
-        depth -= 1
-        if outer_depth == 1 and depth == 0:
-            brace_end = j
-            break
-OLD = src[full_line_start:brace_end+1]
+
 TAB = chr(9)
-NEW = (TAB*6 + '// Vision-bridge override (local deployment patch): allow model switch to text-only
-'
-     + TAB*6 + '// models in sessions with images. The vision-bridge llm/stream listener
-'
-     + TAB*6 + '// converts image blocks to text descriptions before the request reaches the adapter.
-'
-     + TAB*6 + 'if (false) { /* vision-bridge: image-admission gate disabled for model switch */ }
-')
-count = src.count(OLD)
-if count != 1:
-    print('error: model-switch block found %d times (expected 1)' % count, file=sys.stderr)
-    sys.exit(1)
-open(path, 'w', encoding='utf-8').write(src.replace(OLD, NEW, 1))
-print('model-switch admission patch applied')
-PYEOF2
-  fi
+out = []
+
+def enclosing_if_block(text, anchor):
+    """Return (if_pos, end) of the smallest `if (...)` block whose
+    brace-balanced body contains the anchor, or (None, None)."""
+    idx = text.find(anchor)
+    if idx < 0:
+        return None, None
+    search = idx
+    while True:
+        if_pos = text.rfind('if (', 0, search)
+        if if_pos < 0:
+            return None, None
+        brace = text.find('{', if_pos)
+        if brace < 0:
+            search = if_pos
+            continue
+        depth = 0
+        i = brace
+        while i < len(text):
+            c = text[i]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if depth == 0 and i > idx:
+            return if_pos, i
+        search = if_pos
+    return None, None
+
+# ---- patch 1: session.prompt paste admission gate ----
+if_pos, end = enclosing_if_block(src, 'MODEL_DOES_NOT_SUPPORT_IMAGES')
+if if_pos is None:
+    if 'inputModalities' in src:
+        out.append('paste admission: no MODEL_DOES_NOT_SUPPORT_IMAGES gate found (already patched, or this DSH version uses a different check) — skipping')
+    else:
+        out.append('paste admission: no image gate found in this DSH version, skipping')
+else:
+    old = src[if_pos:end + 1]
+    new = (TAB * 6 + '// Vision-bridge override (local deployment patch): allow pasted-image messages to reach the agent loop.\n'
+           + TAB * 6 + 'if (false) { /* vision-bridge: paste image admission gate disabled */ }\n')
+    src = src.replace(old, new, 1)
+    out.append('paste admission: patched')
+
+# ---- patch 2: selectModel model-switch gate ----
+anchor = 'does not accept image input'
+if anchor not in src:
+    anchor = 'does not support image input'
+if anchor not in src:
+    out.append('model-switch gate: not found (already patched, or this DSH version differs) — skipping')
+else:
+    if_pos, end = enclosing_if_block(src, anchor)
+    if if_pos is None:
+        out.append('warning: model-switch image gate found but its if-block could not be located — not patched')
+    else:
+        old = src[if_pos:end + 1]
+        new = (TAB * 6 + '// Vision-bridge override (local deployment patch): allow model switch to text-only models in image sessions.\n'
+               + TAB * 6 + 'if (false) { /* vision-bridge: model-switch image admission gate disabled */ }\n')
+        src = src.replace(old, new, 1)
+        out.append('model-switch gate: patched')
+
+try:
+    open(path, 'w', encoding='utf-8').write(src)
+except OSError as e:
+    print('warning: cannot write %s (%s) — patches NOT persisted' % (path, e), file=sys.stderr)
+    sys.exit(0)
+
+for line in out:
+    print(line)
+PYEOF
 fi
 
 # ---- 4. reminder ----
