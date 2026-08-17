@@ -124,12 +124,10 @@ APIPROXY=$(readlink -f "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy
 if [[ ! -f "$APIPROXY" ]]; then
   echo "warning: dsh-host-apiproxy not found at $APIPROXY; skipping admission patches" >&2
 else
-  # Both patches anchor on STABLE strings (error codes / user-visible messages)
-  # and locate the enclosing if-block by brace balancing, so they tolerate
-  # indentation and code-shape differences between DSH versions. A missing
-  # anchor degrades to a warning, never an error — installation continues.
+  # Safety: back up before touching, then verify syntax after; roll back on failure.
+  cp "$APIPROXY" "$APIPROXY.vb-bak"
   python3 - "$APIPROXY" <<'PYEOF'
-import sys
+import sys, re
 
 path = sys.argv[1]
 try:
@@ -141,39 +139,75 @@ except OSError as e:
 TAB = chr(9)
 out = []
 
-def enclosing_if_block(text, anchor):
-    """Return (if_pos, end) of the smallest `if (...)` block whose
-    brace-balanced body contains the anchor, or (None, None)."""
-    idx = text.find(anchor)
-    if idx < 0:
-        return None, None
-    search = idx
-    while True:
-        if_pos = text.rfind('if (', 0, search)
-        if if_pos < 0:
-            return None, None
-        brace = text.find('{', if_pos)
-        if brace < 0:
-            search = if_pos
-            continue
+def if_statement_bounds(text, if_pos):
+    """Extent of the whole if-statement starting at if_pos:
+    (body_start, body_end) covering a {...} block or a single statement,
+    balancing parens/braces so we never clip mid-expression."""
+    # 1. skip the condition (balanced parens)
+    depth = 0
+    i = if_pos + 2
+    while i < len(text):
+        c = text[i]
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                i += 1
+                break
+        i += 1
+    # 2. skip whitespace / newlines
+    j = i
+    while j < len(text) and text[j] in ' \t\r\n':
+        j += 1
+    if j < len(text) and text[j] == '{':
+        # block statement — balance braces
         depth = 0
-        i = brace
-        while i < len(text):
-            c = text[i]
+        k = j
+        while k < len(text):
+            c = text[k]
             if c == '{':
                 depth += 1
             elif c == '}':
                 depth -= 1
                 if depth == 0:
-                    break
-            i += 1
-        if depth == 0 and i > idx:
-            return if_pos, i
-        search = if_pos
+                    return if_pos, k
+            k += 1
+        return None, None
+    # 3. single statement — scan to ';' balancing (), {}, [] (cross-line safe)
+    depth = 0
+    k = j
+    while k < len(text):
+        c = text[k]
+        if c in '({[':
+            depth += 1
+        elif c in ')}]':
+            depth -= 1
+        elif c == ';' and depth == 0:
+            return if_pos, k
+        elif c == '\n' and depth == 0:
+            return if_pos, k - 1
+        k += 1
     return None, None
 
+def find_enclosing_if(text, anchor):
+    """Nearest line-start `if (` before the anchor whose statement body
+    contains the anchor.  Anchors on line-start ifs only, so comments or
+    strings containing 'if (' are never picked up."""
+    idx = text.find(anchor)
+    if idx < 0:
+        return None, None
+    best = None
+    for m in re.finditer(r'(?m)^[ \t]*if \(', text):
+        if m.start() >= idx:
+            break
+        body_start, body_end = if_statement_bounds(text, m.start())
+        if body_start is not None and body_end > idx:
+            best = (m.start(), body_end)
+    return best if best is not None else (None, None)
+
 # ---- patch 1: session.prompt paste admission gate ----
-if_pos, end = enclosing_if_block(src, 'MODEL_DOES_NOT_SUPPORT_IMAGES')
+if_pos, end = find_enclosing_if(src, 'MODEL_DOES_NOT_SUPPORT_IMAGES')
 if if_pos is None:
     if 'inputModalities' in src:
         out.append('paste admission: no MODEL_DOES_NOT_SUPPORT_IMAGES gate found (already patched, or this DSH version uses a different check) — skipping')
@@ -193,9 +227,9 @@ if anchor not in src:
 if anchor not in src:
     out.append('model-switch gate: not found (already patched, or this DSH version differs) — skipping')
 else:
-    if_pos, end = enclosing_if_block(src, anchor)
+    if_pos, end = find_enclosing_if(src, anchor)
     if if_pos is None:
-        out.append('warning: model-switch image gate found but its if-block could not be located — not patched')
+        out.append('warning: model-switch image gate found but its if-statement could not be located — not patched')
     else:
         old = src[if_pos:end + 1]
         new = (TAB * 6 + '// Vision-bridge override (local deployment patch): allow model switch to text-only models in image sessions.\n'
@@ -212,6 +246,18 @@ except OSError as e:
 for line in out:
     print(line)
 PYEOF
+  PY_RC=$?
+  if [[ $PY_RC -ne 0 ]]; then
+    cp "$APIPROXY.vb-bak" "$APIPROXY"
+    echo "error: apiproxy patching failed (exit $PY_RC); original restored from $APIPROXY.vb-bak" >&2
+  elif ! node --check "$APIPROXY" 2>/dev/null; then
+    cp "$APIPROXY.vb-bak" "$APIPROXY"
+    echo "error: patched dsh-host-apiproxy failed a syntax check; original restored from $APIPROXY.vb-bak" >&2
+    echo "       If you need the vision-bridge admission patches, this DSH version is not"
+    echo "       supported by the automatic patcher — please report the DSH version." >&2
+  else
+    echo "admission patches OK (syntax verified)"
+  fi
 fi
 
 # ---- 4. reminder ----
