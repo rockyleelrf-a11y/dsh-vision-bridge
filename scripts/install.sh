@@ -123,6 +123,12 @@ echo "== 3/4 patch host-apiproxy admission =="
 APIPROXY=$(readlink -f "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js" 2>/dev/null || echo "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js")
 if [[ ! -f "$APIPROXY" ]]; then
   echo "warning: dsh-host-apiproxy not found at $APIPROXY; skipping admission patches" >&2
+elif ! node --check "$APIPROXY" 2>/dev/null; then
+  echo "error: dsh-host-apiproxy is ALREADY broken (syntax check failed); refusing to patch." >&2
+  echo "       This usually means the DeepSeek Harness installation is corrupted." >&2
+  echo "       Reinstall DeepSeek Harness first, then re-run this installer." >&2
+  echo "       (dsh-client-connection failing the same way is another symptom of a" >&2
+  echo "        corrupted install; vision-bridge never modifies that package.)" >&2
 else
   # Safety: back up before touching, then verify syntax after; roll back on failure.
   cp "$APIPROXY" "$APIPROXY.vb-bak"
