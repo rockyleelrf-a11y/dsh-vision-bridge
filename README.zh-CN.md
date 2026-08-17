@@ -13,6 +13,7 @@ Vision Bridge（视觉桥）让**纯文本主模型**（如 `deepseek-v4-flash`�
 - 🗣 **图片问答** — 直接问"这个截图里有什么？""这个报错是什么意思？"，回答基于图片内容。
 - 🧰 **`vision_analyze` 工具** — 说"分析 /path/to/image.png"，模型自动调用工具识别任意文件路径。
 - 📷 **输入栏上传按钮** — 点选本地图片文件，指令自动填入。
+- 🔀 **任意文本模型都可用** — 转换层与主模型无关：把主模型切换到任何纯文本模型（DeepSeek 或任意 `llm-pi-ai` 路由），粘贴图片照常识别。两个准入（粘贴 + 模型切换）都已打补丁，含图片的会话也允许切换文本模型。
 
 ## 工作原理（三层设计）
 
@@ -51,13 +52,19 @@ cd dsh-vision-bridge
 bash scripts/install.sh
 ```
 
-安装脚本会做三件事（均幂等可重跑）：
+安装脚本会做以下几件事（均幂等可重跑）：
 
-1. 把插件包复制到 DSH profile 的 `node_modules`（`$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh-vision-bridge`）——这是 loader 实际解析加载的位置。
-2. 在 `$DSH_HOME/profiles/web/cordis.patch.yml` 追加 `vision-bridge` 组合行。
-3. 给官方 `dsh-host-apiproxy` 打 `session.prompt` 图片准入补丁（幂等；让图片消息能进入 agent loop）。
+1. **先修复可能损坏的 `cordis.patch.yml`** — 早期安装器会把 `- insert:` 盲目追加到默认的 `[]` 模板后，导致一个文件里出现两个 YAML 文档，DSH 启动时解析报错。安装器会先检测并修复这种损坏。
+2. 把插件包复制到 DSH profile 的 `node_modules`（`$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh-vision-bridge`）——这是 loader 实际解析加载的位置。
+3. 在 `$DSH_HOME/profiles/web/cordis.patch.yml` 添加 `vision-bridge` 组合行（幂等；正确处理空模板，绝不会在 `[]` 后面追加）。
+4. 给官方 `dsh-host-apiproxy` 打**两个**准入补丁（均幂等）：
+   - `session.prompt` 图片准入（让粘贴图片消息能进入 agent loop）；
+   - `selectModel` 模型切换准入（让含图片的会话也能切换到纯文本模型）。
+5. 输出配置视觉 provider 所需的 settings 片段。
 
-> ⚠️ 第 2–3 步会修改部署文件。脚本幂等且不自行备份——DSH 升级后请用同一脚本重新执行。
+另外，`bash scripts/fix-patch.sh` 可以修复那些已经被旧安装器损坏的 `cordis.patch.yml`。
+
+> ⚠️ 第 2–4 步会修改部署文件。脚本幂等且不自行备份——DSH 升级后请用同一脚本重新执行。
 
 ### 配置视觉 provider（示例：SenseNova）
 
@@ -99,7 +106,8 @@ dsh-vision-bridge/
 │   │                     # llm/stream 图片→文字转换、视觉模型自动发现
 │   └── client.js         # Client 半部：输入栏 📷 按钮（__ModuleLoader__ 格式）
 ├── scripts/
-│   └── install.sh        # 一键安装（包复制 + 组合行 + apiproxy 补丁）
+│   ├── install.sh        # 一键安装（包复制 + YAML 修复 + 双 apiproxy 补丁）
+│   └── fix-patch.sh      # 修复被旧安装器损坏的 cordis.patch.yml
 └── README.md             # 本文件（英文版见 README.zh-CN.md 的英文对应）
 ```
 
@@ -108,6 +116,11 @@ dsh-vision-bridge/
 - 主模型仍是纯文本："看见"是借来的（经视觉模型转换），**每张新图片产生一次视觉模型调用**（约几秒）。
 - 视觉模型对画面细节的描述包含合理推测；需要严格事实（如逐字 OCR）时请提出针对性问题。
 - `/vision-upload` 端点只绑定回环地址（127.0.0.1），不对外暴露。
+
+## 更新日志
+
+- **0.2.0** — 多模型兼容：补上 `selectModel` 模型切换准入补丁，让含图片的会话也能切换到纯文本模型；修复 `llm/stream` 监听器（改为 async generator，绝不返回 Promise）——此前会让每个请求崩溃；安装器新增"先修复损坏的 `cordis.patch.yml`"步骤，并同时打两个准入补丁；新增 `fix-patch.sh` 修复脚本。
+- **0.1.0** — 初始发布：粘贴即识别、`vision_analyze` 工具、输入栏按钮、视觉模型自动发现。
 
 ## 许可证
 

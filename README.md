@@ -13,6 +13,7 @@ Vision Bridge lets a **text-only main model** (e.g. `deepseek-v4-flash`) recogni
 - 🗣 **Image Q&A** — ask "what's in this screenshot?", "what does this error say?" and get answers grounded in the image.
 - 🧰 **`vision_analyze` tool** — say `analyze /path/to/image.png` and the model calls the tool on any file path.
 - 📷 **Composer camera button** — pick a local file, the instruction is drafted for you.
+- 🔀 **Any text model works** — the conversion layer is model-agnostic: switch the main model to any text-only model (DeepSeek, or any `llm-pi-ai` route) and pasted images keep working. Both admission gates (paste + model-switch) are patched, so image sessions accept model switches too.
 
 ## How it works
 
@@ -53,12 +54,17 @@ bash scripts/install.sh
 
 What the installer does:
 
-1. Copies the package into your DSH profile's `node_modules` (`$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh-vision-bridge`) — the loader's actual resolution source.
-2. Adds the `vision-bridge` row to `$DSH_HOME/profiles/web/cordis.patch.yml` (idempotent).
-3. Patches the shipped `dsh-host-apiproxy` `session.prompt` image-admission gate (idempotent; makes image messages reach the agent loop).
-4. Prints the settings snippet you need for a vision provider.
+1. **Repairs a corrupted `cordis.patch.yml` first** — an earlier installer version blindly appended `- insert:` to the default `[]` template, producing two YAML documents in one file and crashing DSH at startup with a YAML error. The installer detects and fixes this before touching anything.
+2. Copies the package into your DSH profile's `node_modules` (`$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh-vision-bridge`) — the loader's actual resolution source.
+3. Adds the `vision-bridge` row to `$DSH_HOME/profiles/web/cordis.patch.yml` (idempotent; creates/replaces the empty template correctly, never appends to `[]`).
+4. Patches the shipped `dsh-host-apiproxy` — **both** admission gates, idempotently:
+   - `session.prompt` image admission (lets pasted-image messages reach the agent loop);
+   - `selectModel` image admission (lets you switch to a text-only model in a session that already contains images).
+5. Prints the settings snippet you need for a vision provider.
 
-> ⚠️ Steps 2–3 modify deployment files. The installer is idempotent and backs up nothing itself — run a DSH upgrade's re-install with the same script afterwards.
+A separate `bash scripts/fix-patch.sh` repairs a broken `cordis.patch.yml` on machines where the old installer already corrupted it.
+
+> ⚠️ Steps 2–4 modify deployment files. The installer is idempotent and backs up nothing itself — run a DSH upgrade's re-install with the same script afterwards.
 
 ### Configure a vision provider (example: SenseNova)
 
@@ -100,7 +106,8 @@ dsh-vision-bridge/
 │   │                     # llm/stream image→text conversion, vision-model discovery
 │   └── client.js         # Client half: composer camera button (__ModuleLoader__ format)
 ├── scripts/
-│   └── install.sh        # One-shot installer (package + patch + apiproxy fix)
+│   ├── install.sh        # One-shot installer (package + YAML repair + dual apiproxy patches)
+│   └── fix-patch.sh      # Repair a corrupted cordis.patch.yml on machines with the old installer
 ├── README.md             # This file (English)
 ├── README.zh-CN.md       # 中文版说明
 └── LICENSE
@@ -111,6 +118,11 @@ dsh-vision-bridge/
 - The main model stays text-only: "seeing" is delegated to a vision model, so each new image costs one vision-model call (a few seconds).
 - Vision-model descriptions include reasonable interpretation of scene details; for strict facts (verbatim OCR) ask a targeted question.
 - The `/vision-upload` endpoint binds to loopback (127.0.0.1) and is not exposed externally.
+
+## Changelog
+
+- **0.2.0** — Multi-model compatibility: patch the `selectModel` admission gate so image sessions accept text-only model switches; fix the `llm/stream` listener (async generator, never a Promise) that previously crashed every request; installer now repairs corrupted `cordis.patch.yml` and patches both admission gates; `fix-patch.sh` added.
+- **0.1.0** — Initial release: paste-to-recognize, `vision_analyze` tool, composer button, vision-model auto-discovery.
 
 ## License
 
