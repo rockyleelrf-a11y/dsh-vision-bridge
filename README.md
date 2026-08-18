@@ -131,6 +131,7 @@ dsh-vision-bridge/
 
 ## Changelog
 
+- **0.2.1** — Reliability fixes: bound every vision-model call with a per-route timeout (90s) plus a 5-minute failure cooldown so a hung or flaky endpoint can no longer block the whole user turn or surface cryptic `Request aborted` errors; failed descriptions are no longer cached (a transient error no longer poisons an attachment for the session); raise the vision-call token budget to 4096 for thinking vision models; `/vision-status refresh=1` actually refreshes and reports cooldown; composer badge no longer renders the label twice, the status dot only breathes while probing, and the camera tooltip/aria-label reflect real connectivity.
 - **0.2.0** — Multi-model compatibility: patch the `selectModel` admission gate so image sessions accept text-only model switches; fix the `llm/stream` listener (async generator, never a Promise) that previously crashed every request; installer now repairs corrupted `cordis.patch.yml` and patches both admission gates; `fix-patch.sh` added.
 - **0.1.0** — Initial release: paste-to-recognize, `vision_analyze` tool, composer button, vision-model auto-discovery.
 
