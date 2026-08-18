@@ -36,6 +36,16 @@ Vision Bridge（视觉桥）让**纯文本主模型**（如 `deepseek-v4-flash`�
 - **视觉模型自动发现** — 任何声明了 `input: ["text","image"]` 的 provider 会自动接入（不写死模型列表），并在 `llm/adapters-updated` 时刷新。
 - **优雅降级** — 未配置视觉模型时，图片消息照常发送，模型会报告"未配置可用的视觉模型"而不是崩溃。
 
+## 零成本视觉：Ollama（免费开源）
+
+无需 API key、不按次计费、数据不出本机。安装 [Ollama](https://ollama.com) 并拉取一个视觉模型（一次性）：
+
+```bash
+ollama pull llava        # 或 minicpm-v / qwen2.5-vl / llama3.2-vision …
+```
+
+插件会自动检测运行中的 Ollama（`127.0.0.1:11434`）、发现其视觉模型，并**优先使用**（免费）再回退到付费路由。状态点变绿即表示已有可用视觉路由。
+
 ## 环境要求
 
 - 正在运行的 [DeepSeek Harness](https://github.com/deepseek-ai) web profile（`dsh --profile web`）

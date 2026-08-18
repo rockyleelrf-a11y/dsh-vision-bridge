@@ -36,6 +36,16 @@ Key design points:
 - **Auto-discovery of vision models** — any provider that declares `input: ["text","image"]` is picked up automatically (no hard-coded model list). Fresh on `llm/adapters-updated`.
 - **Graceful degradation** — with no vision model configured, image messages still send; the model reports "no vision model configured" instead of crashing.
 
+## Zero-cost vision: Ollama (free & open-source)
+
+No API key, no per-call cost, data stays on your machine. Install [Ollama](https://ollama.com) and pull a vision model once:
+
+```bash
+ollama pull llava        # or: minicpm-v / qwen2.5-vl / llama3.2-vision …
+```
+
+The plugin auto-detects a running Ollama (`127.0.0.1:11434`), discovers its vision models, and uses them **first** (free) before falling back to paid routes. The status dot turns green once a route responds.
+
 ## Requirements
 
 - A running [DeepSeek Harness](https://github.com/deepseek-ai) web profile (`dsh --profile web`)
