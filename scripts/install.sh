@@ -47,7 +47,7 @@ PATCH_FILE="$WEB_DIR/cordis.patch.yml"
 # preventing the service from starting.  Repair it before we touch the file.
 if [[ -f "$PATCH_FILE" ]]; then
   if grep -q '^\[\]$' "$PATCH_FILE" 2>/dev/null; then
-    echo "== 0/4 repairing corrupted cordis.patch.yml =="
+    echo "== 0/5 repairing corrupted cordis.patch.yml =="
     INSERT_BLOCK=$(sed -n '/^- insert:/,$p' "$PATCH_FILE" 2>/dev/null || true)
     if [[ -n "$INSERT_BLOCK" ]]; then
       cat > "$PATCH_FILE" <<EOF
@@ -65,14 +65,14 @@ EOF
 fi
 
 # ---- 1. package ----
-echo "== 1/4 install package =="
+echo "== 1/5 install package =="
 mkdir -p "$PKG_DST"
 cp -R "$SCRIPT_DIR/../package.json" "$PKG_DST/package.json"
 cp -R "$SCRIPT_DIR/../lib" "$PKG_DST/lib/"
 echo "installed to $PKG_DST"
 
 # ---- 2. composition row ----
-echo "== 2/4 add composition row =="
+echo "== 2/5 add composition row =="
 if [[ -f "$PATCH_FILE" ]] && grep -q "dsh-vision-bridge" "$PATCH_FILE" 2>/dev/null; then
   echo "row already present in $PATCH_FILE, skipping"
 else
@@ -118,7 +118,7 @@ EOF
 fi
 
 # ---- 3. deepseek model capability declaration ----
-echo "== 3/4 patch deepseek model capability declaration =="
+echo "== 3/5 patch deepseek model capability declaration =="
 # The image admission gates in dsh-host-apiproxy (paste + model-switch) both
 # trust llm.resolveModelInfo(...).inputModalities. The deepseek adapter
 # hard-codes ["text"], so a text-only main model rejects image messages.
@@ -169,8 +169,110 @@ PYEOF
   fi
 fi
 
-# ---- 4. reminder ----
-echo "== 4/4 done =="
+# ---- 4. apiproxy selectModel gate patch ----
+echo "== 4/5 patch apiproxy selectModel gate =="
+# The selectModel endpoint has a gate that blocks switching to a model without
+# image input when the session already contains images.  The llm-deepseek
+# capability patch (step 3) makes deepseek-official models pass this gate, but
+# pi-ai models (e.g. deepseek-v4-flash on the sense provider) still fail.
+# Patch the gate by replacing the containing if-statement with if (false).
+APIPROXY=$(readlink -f "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js" 2>/dev/null || echo "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js")
+if [[ ! -f "$APIPROXY" ]]; then
+  echo "warning: dsh-host-apiproxy not found at $APIPROXY; skipping selectModel patch" >&2
+else
+  if grep -q "model-switch image admission gate disabled" "$APIPROXY" 2>/dev/null; then
+    echo "selectModel gate: already patched, skipping"
+  else
+    cp "$APIPROXY" "$APIPROXY.vb-bak2"
+    python3 - "$APIPROXY" <<'PYEOF'
+import sys, re
+path = sys.argv[1]
+try:
+    src = open(path, encoding='utf-8').read()
+except OSError as e:
+    print('warning: cannot read %s (%s) — skipping' % (path, e))
+    sys.exit(0)
+
+TAB = chr(9)
+ANCHOR = 'does not accept image input'
+idx = src.find(ANCHOR)
+if idx < 0:
+    # maybe already patched or this version uses different wording
+    print('selectModel gate: anchor not found (already patched or version differs), skipping')
+    sys.exit(0)
+
+# Find the enclosing if-statement: walk backwards to the nearest line-start
+# `if (`, then balance the braces to find the statement body.
+best = None
+for m in re.finditer(r'(?m)^[ \t]*if \(', src):
+    if m.start() >= idx:
+        break
+    if_pos = m.start()
+    # 1. skip the condition (balanced parens)
+    depth = 0
+    i = if_pos + 2
+    while i < len(src) and i < idx + 500:
+        c = src[i]
+        if c == '(': depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0: break
+        i += 1
+    # 2. find the body start
+    j = i
+    while j < len(src) and src[j] in ' \t\r\n': j += 1
+    if j >= len(src): continue
+    if src[j] == '{':
+        # block statement: balance braces
+        depth = 0; k = j
+        while k < len(src):
+            c = src[k]
+            if c == '{': depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0: break
+            k += 1
+        if depth == 0 and k > idx:
+            best = (if_pos, k)
+    else:
+        # single statement: scan to ';' or '\n'
+        depth = 0; k = j
+        while k < len(src):
+            c = src[k]
+            if c in '({[': depth += 1
+            elif c in ')}]': depth -= 1
+            elif c == ';' and depth == 0: break
+            elif c == '\n' and depth == 0: break
+            k += 1
+        if k > idx:
+            best = (if_pos, k)
+
+if best is None:
+    print('warning: selectModel gate found but its if-statement could not be located — not patched')
+    sys.exit(0)
+
+if_pos, end = best
+old = src[if_pos:end + 1]
+new = (TAB * 6 + '// Vision-bridge override (local deployment patch): allow model switch to text-only models in image sessions.\n'
+       + TAB * 6 + 'if (false) { /* vision-bridge: model-switch image admission gate disabled */ }\n')
+try:
+    open(path, 'w', encoding='utf-8').write(src.replace(old, new, 1))
+except OSError as e:
+    print('warning: cannot write %s (%s) — patch NOT persisted' % (path, e), file=sys.stderr)
+    sys.exit(0)
+print('selectModel gate: patched')
+PYEOF
+    if ! node --check "$APIPROXY" 2>/dev/null; then
+      cp "$APIPROXY.vb-bak2" "$APIPROXY"
+      echo "error: patched apiproxy failed a syntax check; original restored from $APIPROXY.vb-bak2" >&2
+    else
+      echo "selectModel gate patch OK (syntax verified)"
+    fi
+  fi
+fi
+
+# ---- 5. reminder ----
+echo "== 5/5 done =="
 echo ""
 echo "Next steps:"
 echo "  1. Configure a vision provider in $DSH_HOME/settings.yaml, e.g.:"
