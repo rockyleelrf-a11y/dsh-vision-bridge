@@ -169,21 +169,25 @@ PYEOF
   fi
 fi
 
-# ---- 4. apiproxy selectModel gate patch ----
-echo "== 4/5 patch apiproxy selectModel gate =="
-# The selectModel endpoint has a gate that blocks switching to a model without
-# image input when the session already contains images.  The llm-deepseek
-# capability patch (step 3) makes deepseek-official models pass this gate, but
+# ---- 4. apiproxy admission gates (paste + model-switch) ----
+echo "== 4/5 patch apiproxy admission gates =="
+# The session.prompt endpoint has a gate that blocks pasting images when the
+# current (text-only) model does not declare image input.  The selectModel
+# endpoint has a gate that blocks model switching when the session already
+# contains images.  Both gates check llm.resolveModelInfo(...).inputModalities.
+# The llm-deepseek patch (step 3) makes deepseek-official models pass, but
 # pi-ai models (e.g. deepseek-v4-flash on the sense provider) still fail.
-# Patch the gate by replacing the containing if-statement with if (false).
+# Patch both gates in one pass by replacing their containing if-statements
+# with if (false).  Uses anchor-based location (error codes / user-visible
+# messages) so tolerates small code-shape differences between DSH versions.
 APIPROXY=$(readlink -f "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js" 2>/dev/null || echo "$PROFILE_DIR/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js")
 if [[ ! -f "$APIPROXY" ]]; then
-  echo "warning: dsh-host-apiproxy not found at $APIPROXY; skipping selectModel patch" >&2
+  echo "warning: dsh-host-apiproxy not found at $APIPROXY; skipping admission patches" >&2
 else
-  if grep -q "model-switch image admission gate disabled" "$APIPROXY" 2>/dev/null; then
-    echo "selectModel gate: already patched, skipping"
+  if grep -q "model-switch image admission gate disabled" "$APIPROXY" 2>/dev/null && grep -q "paste image admission gate disabled" "$APIPROXY" 2>/dev/null; then
+    echo "apiproxy admission gates: both already patched, skipping"
   else
-    cp "$APIPROXY" "$APIPROXY.vb-bak2"
+    cp "$APIPROXY" "$APIPROXY.vb-bak3"
     python3 - "$APIPROXY" <<'PYEOF'
 import sys, re
 path = sys.argv[1]
@@ -194,79 +198,99 @@ except OSError as e:
     sys.exit(0)
 
 TAB = chr(9)
-ANCHOR = 'does not accept image input'
-idx = src.find(ANCHOR)
-if idx < 0:
-    # maybe already patched or this version uses different wording
-    print('selectModel gate: anchor not found (already patched or version differs), skipping')
-    sys.exit(0)
+out = []
 
-# Find the enclosing if-statement: walk backwards to the nearest line-start
-# `if (`, then balance the braces to find the statement body.
-best = None
-for m in re.finditer(r'(?m)^[ \t]*if \(', src):
-    if m.start() >= idx:
-        break
-    if_pos = m.start()
-    # 1. skip the condition (balanced parens)
-    depth = 0
-    i = if_pos + 2
-    while i < len(src) and i < idx + 500:
-        c = src[i]
-        if c == '(': depth += 1
-        elif c == ')':
-            depth -= 1
-            if depth == 0: break
-        i += 1
-    # 2. find the body start
-    j = i
-    while j < len(src) and src[j] in ' \t\r\n': j += 1
-    if j >= len(src): continue
-    if src[j] == '{':
-        # block statement: balance braces
-        depth = 0; k = j
-        while k < len(src):
-            c = src[k]
-            if c == '{': depth += 1
-            elif c == '}':
+def find_enclosing_if(text, anchor, max_search=300):
+    """Find the nearest line-start `if (...)` before the anchor whose body
+    contains the anchor.  Uses balanced parens/braces, not string patterns."""
+    idx = text.find(anchor)
+    if idx < 0: return None, None
+    best = None
+    for m in re.finditer(r'(?m)^[ \t]*if \(', text):
+        if m.start() >= idx: break
+        if_pos = m.start()
+        # skip condition (balanced parens)
+        depth = 0; i = if_pos + 2
+        while i < len(text) and i < idx + max_search:
+            c = text[i]
+            if c == '(': depth += 1
+            elif c == ')':
                 depth -= 1
                 if depth == 0: break
-            k += 1
-        if depth == 0 and k > idx:
-            best = (if_pos, k)
+            i += 1
+        if i >= len(text): continue
+        # skip whitespace
+        j = i + 1
+        while j < len(text) and text[j] in ' \t\r\n': j += 1
+        if j >= len(text): continue
+        if text[j] == '{':
+            depth = 0; k = j
+            while k < len(text) and k < j + max_search:
+                c = text[k]
+                if c == '{': depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0: break
+                k += 1
+            if depth == 0 and k > idx: best = (if_pos, k)
+        else:
+            depth = 0; k = j
+            while k < len(text) and k < j + max_search:
+                c = text[k]
+                if c in '({[': depth += 1
+                elif c in ')}]': depth -= 1
+                elif c == ';' and depth == 0: break
+                elif c == '\n' and depth == 0: break
+                k += 1
+            if k > idx: best = (if_pos, k)
+    return best if best is not None else (None, None)
+
+# ---- patch 1: session.prompt paste admission gate ----
+if 'paste image admission gate disabled' in src:
+    out.append('paste admission gate: already patched, skipping')
+else:
+    if_pos, end = find_enclosing_if(src, 'MODEL_DOES_NOT_SUPPORT_IMAGES')
+    if if_pos is None:
+        out.append('paste admission gate: anchor not found (already patched or version differs) — skipping')
     else:
-        # single statement: scan to ';' or '\n'
-        depth = 0; k = j
-        while k < len(src):
-            c = src[k]
-            if c in '({[': depth += 1
-            elif c in ')}]': depth -= 1
-            elif c == ';' and depth == 0: break
-            elif c == '\n' and depth == 0: break
-            k += 1
-        if k > idx:
-            best = (if_pos, k)
+        old = src[if_pos:end + 1]
+        new = (TAB * 6 + '// Vision-bridge override: allow pasted-image messages to reach the agent loop.\n'
+               + TAB * 6 + 'if (false) { /* vision-bridge: paste image admission gate disabled */ }\n')
+        src = src.replace(old, new, 1)
+        out.append('paste admission gate: patched')
 
-if best is None:
-    print('warning: selectModel gate found but its if-statement could not be located — not patched')
-    sys.exit(0)
+# ---- patch 2: selectModel model-switch gate ----
+if 'model-switch image admission gate disabled' in src:
+    out.append('model-switch gate: already patched, skipping')
+else:
+    anchor = 'does not accept image input'
+    if anchor not in src: anchor = 'does not support image input'
+    if anchor not in src:
+        out.append('model-switch gate: anchor not found (already patched or version differs) — skipping')
+    else:
+        if_pos, end = find_enclosing_if(src, anchor)
+        if if_pos is None:
+            out.append('model-switch gate: could not locate if-statement — not patched')
+        else:
+            old = src[if_pos:end + 1]
+            new = (TAB * 6 + '// Vision-bridge override: allow model switch to text-only models in image sessions.\n'
+                   + TAB * 6 + 'if (false) { /* vision-bridge: model-switch image admission gate disabled */ }\n')
+            src = src.replace(old, new, 1)
+            out.append('model-switch gate: patched')
 
-if_pos, end = best
-old = src[if_pos:end + 1]
-new = (TAB * 6 + '// Vision-bridge override (local deployment patch): allow model switch to text-only models in image sessions.\n'
-       + TAB * 6 + 'if (false) { /* vision-bridge: model-switch image admission gate disabled */ }\n')
 try:
-    open(path, 'w', encoding='utf-8').write(src.replace(old, new, 1))
+    open(path, 'w', encoding='utf-8').write(src)
 except OSError as e:
-    print('warning: cannot write %s (%s) — patch NOT persisted' % (path, e), file=sys.stderr)
+    print('warning: cannot write %s (%s) — patches NOT persisted' % (path, e), file=sys.stderr)
     sys.exit(0)
-print('selectModel gate: patched')
+for line in out:
+    print(line)
 PYEOF
     if ! node --check "$APIPROXY" 2>/dev/null; then
-      cp "$APIPROXY.vb-bak2" "$APIPROXY"
-      echo "error: patched apiproxy failed a syntax check; original restored from $APIPROXY.vb-bak2" >&2
+      cp "$APIPROXY.vb-bak3" "$APIPROXY"
+      echo "error: patched apiproxy failed a syntax check; original restored from $APIPROXY.vb-bak3" >&2
     else
-      echo "selectModel gate patch OK (syntax verified)"
+      echo "apiproxy admission gates OK (syntax verified)"
     fi
   fi
 fi
