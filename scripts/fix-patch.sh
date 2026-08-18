@@ -58,7 +58,7 @@ if [[ -z "$INSERT_BLOCK" ]]; then
 fi
 
 # Check if the file has the corrupted `[]` root pattern
-if grep -q '^[][\]$' "$PATCH_FILE" 2>/dev/null; then
+if grep -q '^\[\]$' "$PATCH_FILE" 2>/dev/null; then
   echo "Detected orphaned '[]' root — repairing file."
   cat > "$PATCH_FILE" <<EOF
 # Your patch layer for this dsh profile, applied after every bundle layer:

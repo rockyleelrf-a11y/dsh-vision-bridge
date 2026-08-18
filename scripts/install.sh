@@ -46,7 +46,7 @@ PATCH_FILE="$WEB_DIR/cordis.patch.yml"
 # parsePatchList expects a single YAML array and throws a YAML error,
 # preventing the service from starting.  Repair it before we touch the file.
 if [[ -f "$PATCH_FILE" ]]; then
-  if grep -q '^[][\]$' "$PATCH_FILE" 2>/dev/null; then
+  if grep -q '^\[\]$' "$PATCH_FILE" 2>/dev/null; then
     echo "== 0/4 repairing corrupted cordis.patch.yml =="
     INSERT_BLOCK=$(sed -n '/^- insert:/,$p' "$PATCH_FILE" 2>/dev/null || true)
     if [[ -n "$INSERT_BLOCK" ]]; then
@@ -93,7 +93,7 @@ else
       name: '$PKG_NAME'
 EOF
     echo "file created at $PATCH_FILE"
-  elif grep -q '^[][\]$' "$PATCH_FILE" 2>/dev/null; then
+  elif grep -q '^\[\]$' "$PATCH_FILE" 2>/dev/null; then
     # Empty template — replace the whole file
     cat > "$PATCH_FILE" <<EOF
 # Your patch layer for this dsh profile, applied after every bundle layer:
