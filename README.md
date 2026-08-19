@@ -13,6 +13,7 @@ Vision Bridge lets a **text-only main model** (e.g. `deepseek-v4-flash`) recogni
 - 🗣 **Image Q&A** — ask "what's in this screenshot?", "what does this error say?" and get answers grounded in the image.
 - 🧰 **`vision_analyze` tool** — say `analyze /path/to/image.png` and the model calls the tool on any file path.
 - 📷 **Composer camera button** — pick a local file, the instruction is drafted for you.
+- 🎯 **User-selectable vision model** — click the status badge to pick which model handles image recognition (e.g. fast cloud `mimo-v2.5`, free local Ollama, or fallback to auto-route).
 - 🔀 **Any text model works** — the conversion layer is model-agnostic: switch the main model to any text-only model (DeepSeek, or any `llm-pi-ai` route) and pasted images keep working. Both admission gates (paste + model-switch) are patched, so image sessions accept model switches too.
 
 ## How it works
@@ -113,8 +114,9 @@ dsh-vision-bridge/
 ├── package.json          # DSH plugin package manifest (dsh.client declaration)
 ├── lib/
 │   ├── index.js          # Host half: vision_analyze tool, /vision-upload route,
-│   │                     # llm/stream image→text conversion, vision-model discovery
-│   └── client.js         # Client half: composer camera button (__ModuleLoader__ format)
+│   │                     # /vision-select route, llm/stream image→text conversion,
+│   │                     # vision-model discovery, user-selectable model
+│   └── client.js         # Client half: composer camera button + model dropdown
 ├── scripts/
 │   ├── install.sh        # One-shot installer (package + YAML repair + dual apiproxy patches)
 │   └── fix-patch.sh      # Repair a corrupted cordis.patch.yml on machines with the old installer
@@ -131,6 +133,7 @@ dsh-vision-bridge/
 
 ## Changelog
 
+- **0.3.0** — **User-selectable vision model**: click the status badge to pick which model handles recognition (e.g. `mimo-v2.5` for fast cloud, Ollama for free local), avoiding the 270s route-delay chaining issue. **Exponential backoff cooldown**: consecutive failures cool down 5min → 15min → 45min → 2h max, preventing hung endpoints from being retried every 5 minutes. **Route priority**: cloud routes (fast) tried first, local Ollama (slow CPU fallback) last. **Ollama 180s timeout**: local CPU vision models get enough time to load. Restore sensenova image declarations (providers may recover).
 - **0.2.1** — Reliability fixes: bound every vision-model call with a per-route timeout (90s) plus a 5-minute failure cooldown so a hung or flaky endpoint can no longer block the whole user turn or surface cryptic `Request aborted` errors; failed descriptions are no longer cached (a transient error no longer poisons an attachment for the session); raise the vision-call token budget to 4096 for thinking vision models; `/vision-status refresh=1` actually refreshes and reports cooldown; composer badge no longer renders the label twice, the status dot only breathes while probing, and the camera tooltip/aria-label reflect real connectivity.
 - **0.2.0** — Multi-model compatibility: patch the `selectModel` admission gate so image sessions accept text-only model switches; fix the `llm/stream` listener (async generator, never a Promise) that previously crashed every request; installer now repairs corrupted `cordis.patch.yml` and patches both admission gates; `fix-patch.sh` added.
 - **0.1.0** — Initial release: paste-to-recognize, `vision_analyze` tool, composer button, vision-model auto-discovery.

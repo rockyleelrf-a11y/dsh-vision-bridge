@@ -31,7 +31,7 @@ PROFILE_DIR="$DSH_HOME/profiles"
 WEB_DIR="$PROFILE_DIR/web"
 PKG_DST="$PROFILE_DIR/node_modules/$PKG_NAME"
 
-echo "== dsh-vision-bridge installer =="
+echo "== dsh-vision-bridge v0.3.0 installer =="
 echo "DSH home : $DSH_HOME"
 
 # ---- sanity checks ----

@@ -13,6 +13,7 @@ Vision Bridge（视觉桥）让**纯文本主模型**（如 `deepseek-v4-flash`�
 - 🗣 **图片问答** — 直接问"这个截图里有什么？""这个报错是什么意思？"，回答基于图片内容。
 - 🧰 **`vision_analyze` 工具** — 说"分析 /path/to/image.png"，模型自动调用工具识别任意文件路径。
 - 📷 **输入栏上传按钮** — 点选本地图片文件，指令自动填入。
+- 🎯 **手动选择视觉模型** — 点击状态徽标从下拉框中选择用哪个模型识图（如快速的 `mimo-v2.5`、免费的本地 Ollama，或自动路由）。
 - 🔀 **任意文本模型都可用** — 转换层与主模型无关：把主模型切换到任何纯文本模型（DeepSeek 或任意 `llm-pi-ai` 路由），粘贴图片照常识别。两个准入（粘贴 + 模型切换）都已打补丁，含图片的会话也允许切换文本模型。
 
 ## 工作原理（三层设计）
@@ -113,12 +114,15 @@ dsh-vision-bridge/
 ├── package.json          # DSH 插件包清单（dsh.client 声明）
 ├── lib/
 │   ├── index.js          # Host 半部：vision_analyze 工具、/vision-upload 路由、
-│   │                     # llm/stream 图片→文字转换、视觉模型自动发现
-│   └── client.js         # Client 半部：输入栏 📷 按钮（__ModuleLoader__ 格式）
+│   │                     # /vision-select 路由、llm/stream 图片→文字转换、
+│   │                     # 视觉模型自动发现、用户选择模型
+│   └── client.js         # Client 半部：输入栏 📷 按钮 + 模型选择下拉框
 ├── scripts/
 │   ├── install.sh        # 一键安装（包复制 + YAML 修复 + 双 apiproxy 补丁）
 │   └── fix-patch.sh      # 修复被旧安装器损坏的 cordis.patch.yml
-└── README.md             # 本文件（英文版见 README.zh-CN.md 的英文对应）
+├── README.md             # 英文版说明
+├── README.zh-CN.md       # 本文件（中文版）
+└── LICENSE
 ```
 
 ## 注意事项与限制
@@ -129,6 +133,7 @@ dsh-vision-bridge/
 
 ## 更新日志
 
+- **0.3.0** — **手动选择视觉模型**：点击状态徽标下拉框选择用哪个模型识别（如快速云端 `mimo-v2.5`、免费本地 Ollama），避免 270s 路由延迟叠加问题。**指数退避冷却**：连续失败冷却时间递增（5 分钟→15 分钟→45 分钟→2 小时封顶），防止挂死端点每 5 分钟被重试。**路由优先级**：云端快路由优先，本地 Ollama（CPU 慢）作为最后备胎。**Ollama 180s 超时**：本地 CPU 视觉模型有足够时间加载。恢复 sensenova 图片声明（等服务商恢复）。
 - **0.2.0** — 多模型兼容：补上 `selectModel` 模型切换准入补丁，让含图片的会话也能切换到纯文本模型；修复 `llm/stream` 监听器（改为 async generator，绝不返回 Promise）——此前会让每个请求崩溃；安装器新增"先修复损坏的 `cordis.patch.yml`"步骤，并同时打两个准入补丁；新增 `fix-patch.sh` 修复脚本。
 - **0.1.0** — 初始发布：粘贴即识别、`vision_analyze` 工具、输入栏按钮、视觉模型自动发现。
 
